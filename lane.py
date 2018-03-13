@@ -2,28 +2,70 @@
 """
 Created on Mon Feb 26 15:43:55 2018
 
-@author: bara_
+@author: Andrei Baraian
 """
 
 #importing some useful packages
+import matplotlib.pyplot as plt
 import numpy as np
 import cv2
-import matplotlib.pyplot as plt
+
+
+## The ego point of the reference image, that will be used as the desired
+## position of the car between the lanes
+egoRefPoint = [345,257]
+
+oneLane = False
+max_right_error = -3 #dummy value, need to set a real value
+max_left_error = 3 #dummy value, need to set a real value
+
     
-def draw_lines(img, lines, color=[0,0,255], thickness=3):
-    if lines is None:
-        return
-    
-    img = np.copy(img)
-    
-    line_img = np.zeros((img.shape[0],img.shape[1],3),dtype=np.uint8)
-    
-    for line in lines:
-        for x1, y1, x2, y2 in line:
-            cv2.line(line_img,(x1,y1),(x2,y2),color,thickness)
-            
-    img = cv2.addWeighted(img,0.8,line_img,1.0,0.0)
-    return img
+def sobel_thresh(img, orient='x',thresh=(0,255)):
+    gray = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
+    if orient == 'x':
+        abs_sobel = np.absolute(cv2.Sobel(gray,cv2.CV_64F,1,0))
+    if orient == 'y':
+        abs_sobel = np.absolute(cv2.Sobel(gray,cv2.CV_64F,0,1))
+    scaled_sobel = np.uint8(255 * abs_sobel / np.max(abs_sobel))
+    binary_output = np.zeros_like(scaled_sobel)
+    binary_output[(scaled_sobel >= thresh[0]) & (scaled_sobel <= thresh[1])] = 1
+    return binary_output
+
+def mag_threshold(img,sobel_kernel=3,thresh=(0,255)):
+    gray = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
+    x = cv2.Sobel(gray,cv2.CV_64F,1,0,ksize=sobel_kernel)
+    y = cv2.Sobel(gray,cv2.CV_64F,0,1,ksize=sobel_kernel)
+    mag = np.sqrt(x**2 + y**2)
+    scale = np.max(mag)/255
+    eightbit = (mag/scale).astype(np.uint8)
+    binary_output = np.zeros_like(eightbit)
+    binary_output[(eightbit > thresh[0]) & (eightbit < thresh[1])] = 1
+    return binary_output
+
+def dir_threshold(img,sobel_kernel=3,thresh=(0, np.pi/2)):
+    gray = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
+    x = np.absolute(cv2.Sobel(gray,cv2.CV_64F,1,0,ksize=sobel_kernel))
+    y = np.absolute(cv2.Sobel(gray,cv2.CV_64F,0,1,ksize=sobel_kernel))
+    direction = np.arctan2(y,x)
+    binary_output = np.zeros_like(direction)
+    binary_output[(direction > thresh[0]) & (direction < thresh[1])] = 1
+    return binary_output
+
+def hls_select(img,sthresh=(0,255),lthresh=()):
+    hls_img = cv2.cvtColor(img,cv2.COLOR_RGB2HLS)
+    #cv2.imshow('hls',hls_img)
+    L = hls_img[:,:,1]
+    S = hls_img[:,:,2]
+    binary_output = np.zeros_like(S)
+    binary_output[(S >= sthresh[0]) & (S <= sthresh[1])
+                    & (L > lthresh[0]) & (L <= lthresh[1])] = 1
+    return binary_output
+
+def red_select(img,thresh=(0,255)):
+    R=img[:,:,0]
+    binary_output = np.zeros_like(R)
+    binary_output[(R > thresh[0]) & (R <= thresh[1])] = 255
+    return binary_output
 
 def resizeImage(originalImage,newWidth=512):
     r = newWidth / originalImage.shape[1]
@@ -47,165 +89,265 @@ def warp_image(img):
     source_points = np.float32([
     [0.0 * x, y-100],
     [(0.5 * x) - (x*0.30), (1/3)*y],
-    [(0.5 * x) + (x*0.15), (1/3)*y],
+    [(0.5 * x) + (x*0.30), (1/3)*y],
     [x - (0.0 * x), y-100]
     ])
     
 #    print(source_points)
     
+#    destination_points = np.float32([
+#    [0.05 * x, y],
+#    [0.20 * x, 0],
+#    [x - (0.20 * x), 0],
+#    [x - (0.05 * x), y]
+#    ])
+    
     destination_points = np.float32([
-    [0.25 * x, y],
-    [0.25 * x, 0],
-    [x - (0.25 * x), 0],
-    [x - (0.25 * x), y]
+    [50, y],
+    [0, 0],
+    [x, 0],
+    [x -50, y]
     ])
+    
+    #print(destination_points)
     
     perspective_transform = cv2.getPerspectiveTransform(source_points, destination_points)
     inverse_perspective_transform = cv2.getPerspectiveTransform( destination_points, source_points)
     
     warped_img = cv2.warpPerspective(img, perspective_transform, image_size, flags=cv2.INTER_LINEAR)
     
-    #print(source_points)
-    #print(destination_points)
-    
     return warped_img, inverse_perspective_transform
 
-nameOfImage = 'test_images/imaj7.jpg'    
+def binary_pipeline(img):
+    img_copy = cv2.GaussianBlur(img,(9,9),0)
+    #cv2.imshow('gaussian',img_copy)
+    
+    #Color channel
+    red_binary = red_select(img_copy,thresh=(200,255))
+    #red_binary = cv2.GaussianBlur(red_binary,(9,9),0)
+    cv2.imshow('filter white',red_binary)
+    
+    #Sobel 
+    x_binary = sobel_thresh(img_copy,thresh=(50,150))
+    y_binary = sobel_thresh(img_copy,orient='y',thresh=(50,150))
+    xy = cv2.bitwise_and(x_binary,y_binary)
+    
+    #magnitude and direction
+    mag_binary = mag_threshold(img_copy, sobel_kernel=3,thresh=(30,100))
+    dir_binary = dir_threshold(img_copy, sobel_kernel=3,thresh=(0.8,1.2))
+    
+    #stack each channnel
+    gradient = np.zeros_like(red_binary)
+    gradient[((x_binary == 1) & (y_binary == 1)) | ((mag_binary == 1) & (dir_binary == 1))] = 1
+    final_binary = cv2.bitwise_or(red_binary,gradient)
+    
+    return red_binary
+    
+
+##--------------------------------------------------------------------------
+##  
+## Find the center between the lanes and return it.
+## !In case there is one lane, return the middle of that lane!
+## The orientation of that lane will be calculated later
+
+
+def find_ego(img):
+    
+    height = img.shape[0]
+    width = img.shape[1]
+    
+    currentRow = int(0.9 * height)
+    currentCol = 3
+    
+    ok = False
+    while ok == False and currentCol < width - 1:
+        mat = img[currentRow-1:currentRow+2,currentCol-1:currentCol+2]
+        a = np.asarray(mat).reshape(-1)
+        binary_mat = np.zeros(9,dtype='int')
+        binary_mat[a > 150] = 1
+        currentCol = currentCol + 1
+        ok = np.bitwise_and.reduce(binary_mat)
+        
+    entry_line1 = currentCol
+    #print('entry is ',entry_line1)
+    ok = False
+    while ok == False and currentCol < width - 1:
+        mat = img[currentRow-1:currentRow+2,currentCol-1:currentCol+2]
+        a = np.asarray(mat).reshape(-1)
+        binary_mat = np.zeros(9,dtype='int')
+        binary_mat[a < 150] = 1
+        currentCol = currentCol + 1
+        ok = np.bitwise_and.reduce(binary_mat)
+        
+    exit_line1 = currentCol
+    #print('exit is ',exit_line1)
+    #currentCol = currentCol + 30
+    
+    ok = False
+    while ok == False and currentCol < width - 2:
+        mat = img[currentRow-1:currentRow+2,currentCol-1:currentCol+2]
+        a = np.asarray(mat).reshape(-1)
+        #print(a,' ',currentCol,' width is ',width-2)
+        binary_mat = np.zeros(9,dtype='int')
+        binary_mat[a > 150] = 1
+        currentCol = currentCol + 1
+        ok = np.bitwise_and.reduce(binary_mat)
+        
+    entry_line2 = currentCol
+     ## if the condition is true, it means that we have only one lane and we
+     ## should further see if we have a right turning lane or a left one
+    if entry_line2 == width - 2:
+        global oneLane 
+        oneLane = True
+        return [currentRow, entry_line1 + ((exit_line1 - entry_line1) // 2)]
+#    
+#    ok = False
+#    while ok == False:
+#        mat = img[currentRow-1:currentRow+2,currentCol-1:currentCol+2]
+#        a = np.asarray(mat).reshape(-1)
+#        binary_mat = np.zeros(9,dtype='int')
+#        binary_mat[a < 150] = 1
+#        currentCol = currentCol + 1
+#        ok = np.bitwise_and.reduce(binary_mat)
+#        
+#    exit_line2 = currentCol
+    
+    egoPoint = [currentRow,exit_line1 + (entry_line2 - exit_line1) // 2]
+    
+    #print('----',entry_line1,exit_line1,entry_line2,exit_line2)
+    print('ego point is',egoPoint)
+    
+    return egoPoint
+
+
+##--------------------------------------------------------------------------
+##
+## Decide if the lane is a right turning one or a left one.
+##   Return 1 if we have a right turning lane
+##   Return 0 if we have a right turning lane
+##   Baseline is the middle point of that lane, situated in the lower part
+##   of the picture
+##
+    
+def findLaneOrientation(img, baseLine):
+    
+    height = img.shape[0]
+    width = img.shape[1]
+    
+    currentRow = int(0.45 * height)
+    currentCol = 3
+    
+    ok = False
+    while ok == False and currentCol < width - 1:
+        mat = img[currentRow-1:currentRow+2,currentCol-1:currentCol+2]
+        a = np.asarray(mat).reshape(-1)
+        binary_mat = np.zeros(9,dtype='int')
+        binary_mat[a > 150] = 1
+        currentCol = currentCol + 1
+        ok = np.bitwise_and.reduce(binary_mat)
+        
+    entry_line1 = currentCol
+    ok = False
+    while ok == False and currentCol < width - 1:
+        mat = img[currentRow-1:currentRow+2,currentCol-1:currentCol+2]
+        a = np.asarray(mat).reshape(-1)
+        binary_mat = np.zeros(9,dtype='int')
+        binary_mat[a < 150] = 1
+        currentCol = currentCol + 1
+        ok = np.bitwise_and.reduce(binary_mat)
+        
+    exit_line1 = currentCol
+    
+    mx = entry_line1 + (exit_line1 - entry_line1) // 2
+    if mx - baseLine[1] > 0:
+        return 1  ## means we have a right turning lane
+    else:
+        return 0  ## means we have a left turning lane
+    
+    
+##--------------------------------------------------------------------------
+## 
+## Calculate the error between the desired ego point and the actual one
+## The error is calculated by substracting the x-axis points of the 
+## desired ego point and the actual ego point
+## 
+## A positive results yields a right positioning and needs a left correction
+## A negative results yields a left positioning and needs a right correction
+##
+        
+def calculateError(img):
+    global oneLane
+    global max_right_error
+    global max_left_error
+    actualEgo = find_ego(img)
+    if oneLane == True: ## the case of having just one lane
+        oneLane = False
+        laneTurning = findLaneOrientation(img,actualEgo)
+        if laneTurning == 1:
+            return max_right_error
+        else:
+            return max_left_error
+    ## we have two lanes
+    return egoRefPoint[1] - actualEgo[1]
+    
+    
+    
+    
+
+
+nameOfImage = 'video/image25.png'    
 originalImage = cv2.imread(nameOfImage)
 gray_image = cv2.cvtColor(originalImage,cv2.COLOR_BGR2GRAY)
-
+resizedImage = resizeImage(originalImage)
 #cv2.imshow('gray image',gray_image)
 
-resizedImage = resizeImage(gray_image)
-cv2.imshow('resized image',resizedImage)
+pipeline_img = binary_pipeline(resizedImage)
+cv2.imshow('pipeline image',pipeline_img)
 
-#croppedImage = regionOfInterest(resizedImage)
-#cv2.imshow('cropped image', croppedImage)
-
-#blurredImage = apply_smoothing(croppedImage)
-#cv2.imshow('blurred image',blurredImage)
-
-#print('The dimension of blurred image ',blurredImage.shape[0],' ',blurredImage.shape[1])
-
-cannyed_image = cv2.Canny(resizedImage,100,200)
+cannyed_image = cv2.Canny(resizedImage,100,200);
 #cv2.imshow('canny image',cannyed_image)
+birdseye_result, inverse_perp_trans = warp_image(pipeline_img)
 
-birdseye_result, inverse_perp_trans = warp_image(cannyed_image)
-
-image_size = (resizedImage.shape[1], resizedImage.shape[0])
 x = resizedImage.shape[1]
 y = resizedImage.shape[0]
-print(y,x)
+
 source_points = np.int32([
                     [0.0 * x, y-100],
                     [(0.5 * x) - (x*0.30), (1/3)*y],
-                    [(0.5 * x) + (x*0.15), (1/3)*y],
+                    [(0.5 * x) + (x*0.30), (1/3)*y],
                     [x - (0.0 * x), y-100]
                     ])
 
 draw_poly = cv2.polylines(resizedImage,[source_points],True,(255,0,0), 5)
+
+bx = birdseye_result.shape[1]
+by = birdseye_result.shape[0]
+
+scan_line1 = np.int32([
+            [0,by - 0.1 * by],
+            [bx,by - 0.1 * by]
+            ])
+
+#draw_poly = cv2.polylines(birdseye_result,[scan_line1],True,(100,100,0),5)
+print('error is ',calculateError(birdseye_result))
+#collision1 = find_ego(birdseye_result)
+src = np.int32([[53,by - 0.1 * by],[257,by - 0.1 * by]])
+draw_poly = cv2.polylines(birdseye_result,[src],True,(100,100,0),5)
+
+#print(calculateError(birdseye_result))
+
+cv2.imshow('bird-eye view',birdseye_result)
+cv2.imshow('resized image',resizedImage)
+##
+##cv2.imshow('orig',gray_image)
+#cv2.imshow('resized image',draw_poly)
+##
+#cv2.imshow('bird',birdseye_result)
+##plt.imshow(birdseye_result)
 #
-#cv2.imshow('orig',gray_image)
-cv2.imshow('resized image',draw_poly)
-#
-cv2.imshow('bird',birdseye_result)
+#histogram = np.sum(birdseye_result[int(birdseye_result.shape[0]/2):,:],axis = 0)
+#plt.figure();
+#plt.plot(histogram);
 
 #canny2 = cv2.Canny(birdseye_result,100,200)
 #cv2.imshow('canny bird',canny2)
-
-#cannyed_image = cv2.Canny(birdseye_result,100,200)
-#cv2.imshow('canny image',cannyed_image)
-
-#cannyed_image = cv2.Canny(blurredImage,100,200)
-#cv2.imshow('canny image',cannyed_image)
-
-#cv2.imshow('originalImage',img)
-#print('This image has dimensions: ',img.shape)
-#height = img.shape[0]
-#width = img.shape[1]
-#
-#r = 500.0 / img.shape[1]
-#dim = (500, int(img.shape[0] * r))
-#resized = cv2.resize(img, dim, interpolation = cv2.INTER_AREA)
-#
-##cv2.imshow('resized',resized)
-#height = resized.shape[0]
-#width = resized.shape[1]
-#
-#print('The new dim are ',height,' ',width)
-#
-#
-##region_of_interest_vertices=[(0,height),(width/2,height/2),(width,height)]
-##cv2.imshow('croppedImage',cropped_img)
-#
-#
-#gray_image = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY)
-#cannyed_image = cv2.Canny(gray_image,100,200)
-#
-#cropped_image = resized[100:height,0:width]
-#cropped_img = cannyed_image[100:height,0:width]
-
-##cropped_image = region_of_interest(cannyed_image,np.array([region_of_interest_vertices],np.int32))
-#lines = cv2.HoughLinesP(cropped_img,rho=6,theta=np.pi/60,threshold=160,lines=np.array([]),minLineLength=40,maxLineGap=25)
-#print(lines)
-##
-#line_image = draw_lines(cropped_image,lines)
-#
-#left_line_x = []
-#left_line_y = []
-#right_line_x = []
-#right_line_y = []
-#
-#left_line_x = []
-#left_line_y = []
-#right_line_x = []
-#right_line_y = []
-#
-#
-#for line in lines:
-#    for x1, y1, x2, y2 in line:
-#        slope = (y2 - y1) / (x2 - x1) # <-- Calculating the slope.
-#        if math.fabs(slope) < 0.5: # <-- Only consider extreme slope
-#            continue
-#        if slope <= 0: # <-- If the slope is negative, left group.
-#            left_line_x.extend([x1, x2])
-#            left_line_y.extend([y1, y2])
-#        else: # <-- Otherwise, right group.
-#            right_line_x.extend([x1, x2])
-#            right_line_y.extend([y1, y2])
-#            
-##min_y = int(img.shape[0] * (3 / 5)) # <-- Just below the horizon
-##max_y = img.shape[0] # <-- The bottom of the image
-#
-#poly_left = np.poly1d(np.polyfit(
-#    left_line_y,
-#    left_line_x,
-#    deg=1
-#))
-#
-#left_x_start = int(poly_left(max_y))
-#left_x_end = int(poly_left(min_y))
-#
-#poly_right = np.poly1d(np.polyfit(
-#    right_line_y,
-#    right_line_x,
-#    deg=1
-#))
-#
-#right_x_start = int(poly_right(max_y))
-#right_x_end = int(poly_right(min_y))
-#
-#line_image = draw_lines(
-#    cropped_image,
-#    [[
-#        [left_x_start, max_y, left_x_end, min_y],
-#        [right_x_start, max_y, right_x_end, min_y],
-#    ]],
-#    thickness=5,
-#)
-#
-#cv2.imshow('grayImage',gray_image)
-#cv2.imshow('cannyImage',cannyed_image)
-#cv2.imshow('croppedImage',cropped_img)
-#cv2.imshow('line_img',line_image)
-#cv2.imshow('two_lines',line_img)
